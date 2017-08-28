@@ -1,0 +1,176 @@
+---
+title: "PASymp"
+author: "Ben Johnson"
+output:
+  html_document:
+    toc: true
+---
+
+# Session Info
+
+This markdown was compiled in an environment with the following state.
+
+```{r LoadLibraries, warning = F, message = F, echo = F}
+library(dplyr)
+library(ggplot2)
+```
+
+```{r Versions, warning = F, message = F, echo = F}
+sessionInfo()
+```
+
+# Manipulate Data
+
+The data set we are working with was obtained from [Kaggle](https://www.kaggle.com/deepmatrix/imdb-5000-movie-dataset). It includes data scraped from IMDB's top 5000 list.
+
+```{r ManipulateData01, warning = F, message = F}
+MovieData <- read.csv("movie_metadata.csv")
+
+names(MovieData)
+```
+
+We'll build a logistic regression model to predict how successful films are based on their budget, target audience, and how popular its cast is. For target audience, let's investigate the distribution of MPAA ratings among IMDB's top 5000 movies.
+
+```{r ManipulateData02, warning = F, message = F}
+table(MovieData$content_rating)
+```
+
+## Feature engineering
+
+In the following chunk of code, we define a film as successful if it grossed more than its allotted budget. We also use this time to define the film's target audience, and to filter out records with potential data anomolies.
+
+```{r ManipulateData03, warning = F, message = F}
+ModelData <- MovieData %>%
+  mutate(Success = ifelse(gross > budget, 1, 0),
+         content_rating = trimws(content_rating),
+         Audience = ifelse(content_rating %in% c("PG", "G", "TV-PG", "TV-G", "TV-Y", "TV-Y7", "GP"), "Ankle-biters",
+                           ifelse(content_rating %in% c("PG-13", "TV-14"), "Whipper-snappers",
+                                  ifelse(content_rating %in% c("R", "TV-MA", "M", "NC-17"), "Grown-ups",
+                                         "Other")))) %>%
+  filter(!is.na(Success),
+         Audience != "Other")
+```
+
+## Capping continuous variables
+
+To measure the popularity of a film's cast, we'll use the "cast_total_facebook_likes" variable from the dataset. For good measure, we'll cap the total facebook likes and budget variables (our two continuous variables) at the tails.
+
+```{r ManipulateData04, warning = F, message = F}
+budget.caps <- quantile(ModelData$budget, probs = c(0.025, 0.975))
+facebook.caps <- quantile(ModelData$cast_total_facebook_likes, probs = c(0.025, 0.975))
+
+ModelData <- ModelData %>%
+  mutate(budget.capped = pmax(budget, budget.caps[1]),
+         budget.capped = pmin(budget.capped, budget.caps[2]),
+         facebook.capped = pmax(cast_total_facebook_likes, facebook.caps[1]),
+         facebook.capped = pmin(facebook.capped, facebook.caps[2]))
+```
+
+## Partitioning training and holdout 
+
+In order to test our regression model on data for which it was not fit to, we partition our modeling data set into two subsets. The training data set constitutes 70% of the entire modeling data set while the holdout data makes up 30%.
+
+```{r ManipulateData05, warning = F, message = F}
+set.seed(1337)
+ModelData <- ModelData %>%
+  mutate(Sample = ifelse(runif(nrow(ModelData)) < 0.7, "Training", "Holdout"))
+```
+
+# Fitting the model
+
+To fit a logistic regression model, we use the glm() function native to base R. We pass the glm function three inputs:
+
+1. The 'formula' of our model which specifies that the "Success" variable is a linear combination of budget, facebook likes, and target audience.
+2. The data on which to fit the model. Note that we've filtered the modeling data set to the "Training" sample.
+3. We specify the family as "binomial". This tells R that we want to fit the model using the logistic link function.
+
+```{r FitModel01, warning = F, message = F}
+mod <- glm(Success ~ budget.capped + facebook.capped + Audience,
+           data = filter(ModelData, Sample == "Training"),
+           family = "binomial")
+```
+
+Model coefficients and variable significance is shown below.
+
+```{r FitModel02, warning = F, message = F}
+summary(mod)
+```
+
+We'll create a new data frame called "ResultData", which is simply the entire modeling data set with the addition of model predictions.
+
+```{r FitModel03, warning = F, message = F}
+ResultData <- ModelData %>%
+  mutate(Prediction = predict(mod, newdata = ModelData, type = "response"))
+```
+
+# Validation plots
+
+Next we will plot relationships between model predictions and actual experience on the holdout data set. In order to plot along the continuous predictors, we'll bucket them and represent each bucket with its median value.
+
+```{r ValidationPlots01, warning = F, message = F}
+ResultData <- ResultData %>%
+  mutate(budget.buckets = cut(ModelData$budget.capped, breaks = quantile(ModelData$budget.capped, probs = seq(0, 1, 0.1)), include.lowest = T),
+         facebook.buckets = cut(ModelData$facebook.capped, breaks = quantile(ModelData$facebook.capped, probs = seq(0, 1, 0.1))), include.lowest = T) %>%
+  group_by(budget.buckets) %>%
+  mutate(budget.mid = median(budget.capped)) %>%
+  group_by(facebook.buckets) %>%
+  mutate(facebook.mid = median(facebook.capped)) %>%
+  ungroup()
+```
+
+The following chunk of code creates three charts. The first chart displays record counts within each budget bucket by the film's target audience. The second plots the model predictions alongside the actual observed proportions. In the third chart, we investigate model fit by plotting Actual/Expected ratios.
+
+```{r ValidationPlots02, warning = F, message = F}
+## Choose whether to create plots on the training data or the holdout data
+# DataSubset <- "Training"
+DataSubset <- "Holdout"
+
+b1 <- ResultData %>%
+  filter(Sample == DataSubset) %>%
+  group_by(budget.buckets, Audience) %>%
+  summarize(Count = n(),
+            budget.mid = median(budget.mid)) %>%
+  ggplot(aes(x = budget.mid, y = Count, fill = Audience)) +
+  geom_bar(stat = "identity")
+
+b2 <- ResultData %>%
+  filter(Sample == DataSubset) %>%
+  group_by(budget.buckets, Audience) %>%
+  summarize(Actual = mean(Success),
+            Expected = mean(Prediction),
+            budget.mid = median(budget.mid)) %>%
+  ggplot(aes(x = budget.mid, colour = Audience)) +
+  geom_line(aes(y = Actual), lty = 1, lwd = 1) +
+  geom_line(aes(y = Expected), lty = 2, lwd = 1) +
+  ylim(0, 1)
+
+b3 <- ResultData %>%
+  filter(Sample == DataSubset) %>%
+  group_by(budget.buckets, Audience) %>%
+  summarize(Actual = mean(Success),
+            Expected = mean(Prediction),
+            budget.mid = median(budget.mid)) %>%
+  mutate(AE = Actual/Expected) %>%
+  ggplot(aes(x = budget.mid, colour = Audience)) +
+  geom_line(aes(y = AE), lty = 1, lwd = 1) +
+  geom_hline(aes(yintercept = 1)) +
+  coord_cartesian(ylim = c(0, 2)) 
+```
+
+Notice that the films with higher budgets seem targeted more towards whipper-snappers while the lower budget films target us grown-ups.
+
+```{r ValidationPlots03, warning = F, message = F}
+b1
+```
+
+Overall trends suggest that increasing a film's budget makes it more difficult for the film to gross more than it's budget... seems intuitive. We can also see from this plot that are model might not be doing the best job of predicting success with respect to the budget variable.
+
+```{r ValidationPlots04, warning = F, message = F}
+b2
+```
+
+Looking at A/E plots confirms what the last plot showed, our model needs some TLC (tender loving care).
+
+```{r ValidationPlots05, warning = F, message = F}
+b3
+```
