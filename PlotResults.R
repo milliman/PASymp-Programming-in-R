@@ -1,7 +1,7 @@
 ## We'll bucket the continuous variables in order to plot along them later.
 ResultData <- ResultData %>%
   mutate(budget.buckets = cut(ModelData$budget.capped, breaks = quantile(ModelData$budget.capped, probs = seq(0, 1, 0.1)), include.lowest = T),
-         facebook.buckets = cut(ModelData$facebook.capped, breaks = quantile(ModelData$facebook.capped, probs = seq(0, 1, 0.1))), include.lowest = T) %>%
+         facebook.buckets = cut(ModelData$facebook.capped, breaks = quantile(ModelData$facebook.capped, probs = seq(0, 1, 0.1)), include.lowest = T)) %>%
   group_by(budget.buckets) %>%
   mutate(budget.mid = median(budget.capped)) %>%
   group_by(facebook.buckets) %>%
